@@ -81,14 +81,14 @@ class ProcessorLayer(nn.Module):
     def forward(self, data: HeteroData) -> HeteroData:
         H = self.H
         # 1) Fetch node embeddings (with sanity checks)
-        node_x: Dict[str, torch.Tensor] = {}
+        node_h: Dict[str, torch.Tensor] = {}
         for ntype in self.NODE_TYPES:
-            x = data[ntype].x
-            assert x.dim() == 2 and x.size(-1) == H, f"{ntype}.x must be [N,{H}]"
-            node_x[ntype] = x
+            h = data[ntype].h
+            assert h.dim() == 2 and h.size(-1) == H, f"{ntype}.h must be [N,{H}]"
+            node_h[ntype] = h
 
         # 2) Message buffers per node type
-        msg_buf: Dict[str, torch.Tensor] = {nt: torch.zeros_like(node_x[nt]) for nt in self.NODE_TYPES}
+        msg_buf: Dict[str, torch.Tensor] = {nt: torch.zeros_like(node_h[nt]) for nt in self.NODE_TYPES}
 
         # 3) Physical relations: update edge_attr (residual) + send messages to dst
         for etype in self.PHYSICAL:
@@ -96,16 +96,16 @@ class ProcessorLayer(nn.Module):
             src_t, _, dst_t = etype
             store = data[etype]
             edge_index = store.edge_index
-            e = store.edge_attr
+            e = store.h
 
             src_idx, dst_idx = edge_index[0], edge_index[1]
-            v_src = node_x[src_t][src_idx]
-            v_dst = node_x[dst_t][dst_idx]
+            v_src = node_h[src_t][src_idx]
+            v_dst = node_h[dst_t][dst_idx]
 
             inp = torch.cat([v_src, v_dst, e], dim=-1)
             delta_e = self.dropout(self.edge_mlps[key](inp))
-            store.edge_attr = e + delta_e
-            msg = self._agg(delta_e, dst_idx, dim_size=node_x[dst_t].size(0))
+            store.h = e + delta_e
+            msg = self._agg(delta_e, dst_idx, dim_size=node_h[dst_t].size(0))
             msg_buf[dst_t] = msg_buf[dst_t] + msg
 
         # 4) Artificial links: message-only (no edge state)
@@ -116,19 +116,19 @@ class ProcessorLayer(nn.Module):
             edge_index = store.edge_index
             src_idx, dst_idx = edge_index[0], edge_index[1]
 
-            v_src = node_x[src_t][src_idx]
-            v_dst = node_x[dst_t][dst_idx]
+            v_src = node_h[src_t][src_idx]
+            v_dst = node_h[dst_t][dst_idx]
 
             inp = torch.cat([v_src, v_dst], dim=-1)
             msg = self.dropout(self.link_mlps[key](inp))
-            msg_buf[dst_t] = msg_buf[dst_t] + self._agg(msg, dst_idx, dim_size=node_x[dst_t].size(0))
+            msg_buf[dst_t] = msg_buf[dst_t] + self._agg(msg, dst_idx, dim_size=node_h[dst_t].size(0))
 
         # 5) Node updates (residual per node type)
         for ntype in self.NODE_TYPES:
-            v = node_x[ntype]
+            v = node_h[ntype]
             vin = torch.cat([v, msg_buf[ntype]], dim=-1)
             dv = self.dropout(self.node_mlps[ntype](vin))
-            data[ntype].x = v + dv
+            data[ntype].h = v + dv
 
         return data
 
@@ -150,6 +150,17 @@ class OPFCore(nn.Module):
     @staticmethod
     def _etype_key(et: Tuple[str, str, str]) -> str:
         return "__".join(et)
+
+    @staticmethod
+    def _strip_labels(proc: HeteroData) -> None:
+        for ntype in proc.node_types:
+            store = proc[ntype]
+            if "y" in store:
+                del store["y"]
+        for etype in proc.edge_types:
+            store = proc[etype]
+            if "edge_label" in store:
+                del store["edge_label"]
 
     def __init__(
         self,
@@ -186,34 +197,34 @@ class OPFCore(nn.Module):
         self.dec_bus = MLP(hidden_size, 3)
         self.dec_gen = MLP(hidden_size, 2)
 
-    def _encode(self, data: HeteroData) -> HeteroData:
+    def _encode(self, data: HeteroData, raw: HeteroData) -> HeteroData:
         data = self.norm.normalize(data) if self.norm is not None else data
 
         bx = data["bus"].x
-        data["bus"].x = self.enc_bus(
+        data["bus"].h = self.enc_bus(
             torch.cat([bx[:, (0, 2, 3)], self.bus_type_emb(bx[:, 1].long())], dim=-1)
         )
+
         for nt, enc in self.node_encoders.items():
-            data[nt].x = enc(data[nt].x)
+            data[nt].h = enc(data[nt].x)
 
         for key, enc in self.edge_encoders.items():
             et = self._edge_keys[key]
-            data[et].edge_attr = enc(data[et].edge_attr)
+            data[et].h = enc(data[et].edge_attr)
         return data
 
     def _decode(self, proc: HeteroData, raw: HeteroData) -> HeteroData:
         # Bus: va (angle, rad), vm (magnitude, p.u.)
-        s, c, z_vm = torch.unbind(self.dec_bus(proc["bus"].x), dim=-1)
+        s, c, z_vm = torch.unbind(self.dec_bus(proc["bus"].h), dim=-1)
         norm = torch.sqrt(s * s + c * c).clamp_min(1e-8)
         va = torch.atan2(s / norm, c / norm)
 
         vmin, vmax = raw["bus"].x[:, 2:4]
         vm = vmin + torch.sigmoid(z_vm) * (vmax - vmin)
-        proc["bus"].y = torch.stack([va, vm], dim=-1)
+        proc["bus"].pred = torch.stack([va, vm], dim=-1)
 
         # Generator: pg, qg
-        gen_h = proc["generator"].h
-        z_pg, z_qg = torch.unbind(self.dec_gen(gen_h), dim=-1)
+        z_pg, z_qg = torch.unbind(self.dec_gen(proc["generator"].h), dim=-1)
 
         pmin, pmax = raw["generator"].x[:, 2:4]
         qmin, qmax = raw["generator"].x[:, 5:7]
@@ -225,11 +236,13 @@ class OPFCore(nn.Module):
 
 
     def forward(self, data: HeteroData) -> HeteroData:
-        raw = data.clone()
-        data = self._encode(data)
+        raw = data
+        proc = data.clone()
+        self._strip_labels(proc)
+        proc = self._encode(proc, raw)
 
         for layer in self.layers:
-            data = layer(data)
+            proc = layer(proc)
 
-        data = self._decode(data, raw)
-        return data
+        proc = self._decode(proc, raw)
+        return proc
