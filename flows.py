@@ -202,19 +202,6 @@ def power_balance_residuals(data, va, vm, pg, qg, line_flows, xfmr_flows):
     return res_P, res_Q
 
 
-def power_balance_loss(res_P, res_Q, reduction="mean"):
-    """
-    L2 loss on nodal power balance residuals.
-    """
-    loss = res_P.pow(2) + res_Q.pow(2)
-    if reduction == "mean":
-        return loss.mean()
-    elif reduction == "sum":
-        return loss.sum()
-    else:
-        return loss
-
-
 # ---------------------------------------------------------------------------
 # Inequality constraints: thermal limits & angle limits
 # ---------------------------------------------------------------------------
@@ -245,22 +232,6 @@ def thermal_violations(edge_attr, flows, rate_col_idx):
     return v_from, v_to
 
 
-def thermal_loss(v_from, v_to, reduction="mean"):
-    """
-    L2 penalty on thermal limit violations.
-    """
-    if v_from is None or v_to is None:
-        return torch.tensor(0.0)
-
-    loss = v_from.pow(2) + v_to.pow(2)
-    if reduction == "mean":
-        return loss.mean()
-    elif reduction == "sum":
-        return loss.sum()
-    else:
-        return loss
-
-
 def angle_violations(va, edge_index, angmin, angmax):
     """
     Compute angle difference violations:
@@ -273,22 +244,6 @@ def angle_violations(va, edge_index, angmin, angmax):
     v_low  = torch.relu(angmin - ang)  # violation if ang < angmin
     v_high = torch.relu(ang - angmax)  # violation if ang > angmax
     return v_low + v_high
-
-
-def angle_loss(v, reduction="mean"):
-    """
-    L2 penalty on angle difference violations.
-    """
-    if v is None:
-        return torch.tensor(0.0)
-
-    loss = v.pow(2)
-    if reduction == "mean":
-        return loss.mean()
-    elif reduction == "sum":
-        return loss.sum()
-    else:
-        return loss
 
 
 # ---------------------------------------------------------------------------
@@ -336,23 +291,30 @@ def constraint_losses(
 
     # 2) equality constraints: nodal P/Q balance
     res_P, res_Q = power_balance_residuals(data, va, vm, pg, qg, line_flows, xfmr_flows)
-    loss_eq = power_balance_loss(res_P, res_Q)
+    loss_eq = (res_P.pow(2) + res_Q.pow(2)).mean()
 
     # 3) inequality: thermal limits (lines + transformers)
-    loss_th = torch.tensor(0.0, device=va.device)
+    thermal_viols = []
 
     if line_flows is not None:
         line_attr = data[("bus", "ac_line", "bus")].edge_attr
         v_from_l, v_to_l = thermal_violations(line_attr, line_flows, rate_col_idx=6)
-        loss_th = loss_th + thermal_loss(v_from_l, v_to_l)
+        thermal_viols.extend([v_from_l, v_to_l])
 
     if xfmr_flows is not None:
         xfmr_attr = data[("bus", "transformer", "bus")].edge_attr
         v_from_t, v_to_t = thermal_violations(xfmr_attr, xfmr_flows, rate_col_idx=4)
-        loss_th = loss_th + thermal_loss(v_from_t, v_to_t)
+        thermal_viols.extend([v_from_t, v_to_t])
+
+    thermal_viols = [v for v in thermal_viols if v is not None]
+    if thermal_viols:
+        loss_th = torch.cat(thermal_viols).pow(2).mean()
+    else:
+        loss_th = torch.tensor(0.0, device=va.device)
 
     # 4) inequality: angle limits (optional)
     loss_ang = torch.tensor(0.0, device=va.device)
+    angle_viols = []
     if w_ang != 0.0:
         # lines
         if ("bus", "ac_line", "bus") in data.edge_types:
@@ -360,7 +322,7 @@ def constraint_losses(
             line_attr = data[("bus", "ac_line", "bus")].edge_attr
             angmin_l, angmax_l = line_attr[:, 0], line_attr[:, 1]
             v_ang_l = angle_violations(va, line_edge, angmin_l, angmax_l)
-            loss_ang = loss_ang + angle_loss(v_ang_l)
+            angle_viols.append(v_ang_l)
 
         # transformers
         if ("bus", "transformer", "bus") in data.edge_types:
@@ -368,7 +330,12 @@ def constraint_losses(
             xfmr_attr = data[("bus", "transformer", "bus")].edge_attr
             angmin_t, angmax_t = xfmr_attr[:, 0], xfmr_attr[:, 1]
             v_ang_t = angle_violations(va, xfmr_edge, angmin_t, angmax_t)
-            loss_ang = loss_ang + angle_loss(v_ang_t)
+            angle_viols.append(v_ang_t)
+
+        if angle_viols:
+            loss_ang = torch.cat(angle_viols).pow(2).mean()
+        else:
+            loss_ang = torch.tensor(0.0, device=va.device)
 
     # 5) combine with weights
     total = w_eq * loss_eq + w_th * loss_th + w_ang * loss_ang
