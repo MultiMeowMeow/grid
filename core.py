@@ -221,7 +221,7 @@ class OPFCore(nn.Module):
 
         vmin, vmax = raw["bus"].x[:, 2:4]
         vm = vmin + torch.sigmoid(z_vm) * (vmax - vmin)
-        proc["bus"].pred = torch.stack([va, vm], dim=-1)
+        bus_pred = torch.stack([va, vm], dim=-1)
 
         # Generator: pg, qg
         z_pg, z_qg = torch.unbind(self.dec_gen(proc["generator"].h), dim=-1)
@@ -230,10 +230,9 @@ class OPFCore(nn.Module):
         qmin, qmax = raw["generator"].x[:, 5:7]
         pg = pmin + torch.sigmoid(z_pg) * (pmax - pmin)
         qg = qmin + torch.sigmoid(z_qg) * (qmax - qmin)
-        proc["generator"].pred = torch.stack([pg, qg], dim=-1)
+        gen_pred = torch.stack([pg, qg], dim=-1)
 
-        return proc
-
+        return bus_pred, gen_pred
 
     def forward(self, data: HeteroData) -> HeteroData:
         raw = data
@@ -244,5 +243,5 @@ class OPFCore(nn.Module):
         for layer in self.layers:
             proc = layer(proc)
 
-        proc = self._decode(proc, raw)
-        return proc
+        bus_pred, gen_pred = self._decode(proc, raw)
+        return bus_pred, gen_pred
