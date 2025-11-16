@@ -1,0 +1,36 @@
+defaults:
+  - _self_
+
+data:
+  root: data/opf
+  case_name: pglib_opf_case118_ieee
+  num_groups: 1
+  topological_perturbations: false
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+
+model:
+  num_layers: 6
+  hidden_size: 256
+  aggregation: sum
+
+loss:
+  w_eq: 1.0
+  w_th: 1.0
+  w_ang: 0.0
+
+optimizer:
+  lr: 3e-4
+  weight_decay: 0.0
+
+trainer:
+  max_epochs: 10
+  accelerator: auto
+  devices: 1
+  log_every_n_steps: 10
+  gradient_clip_val: 0.0
+
+normalizer:
+  stats_path: artifacts/opf_normalizer.pt
+  overwrite: false
