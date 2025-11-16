@@ -306,13 +306,8 @@ def constraint_losses(
         v_from_t, v_to_t = thermal_violations(xfmr_attr, xfmr_flows, rate_col_idx=4)
         thermal_viols.extend([v_from_t, v_to_t])
 
-    # Each violation tensor can be ``None`` (e.g. no lines/transformers in the
-    # batch). Filter those out before concatenating so the reduction only sees
-    # real values.
     thermal_viols = [v for v in thermal_viols if v is not None]
     if thermal_viols:
-        # Stack all branch-end violations (from/to, lines/transformers) into a
-        # single vector and compute its mean-squared magnitude.
         loss_th = torch.cat(thermal_viols).pow(2).mean()
     else:
         loss_th = torch.tensor(0.0, device=va.device)
