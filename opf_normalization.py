@@ -6,6 +6,12 @@ import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
 
+from feature_layout import (
+    BUS_NUMERIC_INPUT_COLS,
+    AC_LINE_INPUT_COLS,
+    TRANSFORMER_INPUT_COLS,
+)
+
 PathKey = Tuple[Union[str, Tuple[str, str, str]], str]  # e.g. ("bus","x") or (("bus","ac_line","bus"),"edge_attr")
 Stats = Tuple[Tensor, Tensor]
 EPS = 1e-8
@@ -13,9 +19,9 @@ EPS = 1e-8
 # Feature columns that should be normalized per structure.  Everything omitted
 # here is intentionally ignored (e.g. graph.baseMVA, bus voltage limits,
 # ac_line angle bounds, transformer angle/phase/tap susceptances, loads, etc.).
-BUS_NORMALIZED_COLS: Sequence[int] = (0,)  # base_kv only; skip bus_type/vmin/vmax
-AC_LINE_NORMALIZED_COLS: Sequence[int] = tuple(range(2, 9))  # drop angmin/angmax
-TRANSFORMER_NORMALIZED_COLS: Sequence[int] = (2, 3, 4, 5, 6, 7)  # skip ang, shift, b_fr/b_to
+BUS_NORMALIZED_COLS: Sequence[int] = BUS_NUMERIC_INPUT_COLS
+AC_LINE_NORMALIZED_COLS: Sequence[int] = AC_LINE_INPUT_COLS
+TRANSFORMER_NORMALIZED_COLS: Sequence[int] = TRANSFORMER_INPUT_COLS
 
 
 @dataclass
