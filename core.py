@@ -6,6 +6,11 @@ from torch_scatter import scatter_sum, scatter_mean
 from torch_geometric.data import HeteroData
 from utils import weight_init
 from opf_normalization import OPFNormalizer
+from feature_layout import (
+    BUS_NUMERIC_INPUT_COLS,
+    BUS_TYPE_COL,
+    EDGE_INPUT_COLS,
+)
 
 class MLP(nn.Module):
     """Linear -> LayerNorm -> ReLU -> Linear"""
@@ -137,15 +142,12 @@ class ProcessorLayer(nn.Module):
 class OPFCore(nn.Module):
 
     NODE_FEATS = {
-        "bus": 4,
+        "bus": len(BUS_NUMERIC_INPUT_COLS) + 1,  # +1 for bus_type (categorical)
         "generator": 11,
         "load": 2,
         "shunt": 2,
     }
-    EDGE_FEATS = {
-        ("bus", "ac_line", "bus"): 9,
-        ("bus", "transformer", "bus"): 11,
-    }
+    EDGE_FEATS = {et: len(cols) for et, cols in EDGE_INPUT_COLS.items()}
     BUS_TYPE = 4
     @staticmethod
     def _etype_key(et: Tuple[str, str, str]) -> str:
@@ -175,7 +177,7 @@ class OPFCore(nn.Module):
 
         # Encoders
         self.bus_type_emb = nn.Embedding(self.BUS_TYPE, hidden_size)
-        self.enc_bus = MLP(3 + hidden_size, hidden_size)
+        self.enc_bus = MLP(len(BUS_NUMERIC_INPUT_COLS) + hidden_size, hidden_size)
         self.node_encoders = nn.ModuleDict({
             nt: MLP(self.NODE_FEATS[nt], hidden_size)
             for nt in self.NODE_FEATS if nt != "bus"
@@ -201,16 +203,17 @@ class OPFCore(nn.Module):
         data = self.norm.normalize(data) if self.norm is not None else data
 
         bx = data["bus"].x
-        data["bus"].h = self.enc_bus(
-            torch.cat([bx[:, (0, 2, 3)], self.bus_type_emb(bx[:, 1].long())], dim=-1)
-        )
+        bus_num = bx[:, BUS_NUMERIC_INPUT_COLS]
+        bus_type = self.bus_type_emb(bx[:, BUS_TYPE_COL].long())
+        data["bus"].h = self.enc_bus(torch.cat([bus_num, bus_type], dim=-1))
 
         for nt, enc in self.node_encoders.items():
             data[nt].h = enc(data[nt].x)
 
         for key, enc in self.edge_encoders.items():
             et = self._edge_keys[key]
-            data[et].h = enc(data[et].edge_attr)
+            cols = EDGE_INPUT_COLS[et]
+            data[et].h = enc(data[et].edge_attr[:, cols])
         return data
 
     def _decode(self, proc: HeteroData, raw: HeteroData) -> HeteroData:
