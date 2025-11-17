@@ -173,7 +173,7 @@ class OPFCore(nn.Module):
     ):
         super().__init__()
         self.H = hidden_size
-        self.norm = OPFNormalizer()
+        self.norm = None
 
         # Encoders
         self.bus_type_emb = nn.Embedding(self.BUS_TYPE, hidden_size)
@@ -199,8 +199,9 @@ class OPFCore(nn.Module):
         self.dec_bus = MLP(hidden_size, 3)
         self.dec_gen = MLP(hidden_size, 2)
 
-    def _encode(self, data: HeteroData, raw: HeteroData) -> HeteroData:
-        data = self.norm.normalize(data) if self.norm is not None else data
+    def _encode(self, data: HeteroData) -> HeteroData:
+        if self.norm is not None:
+            data = self.norm.normalize(data)
 
         bx = data["bus"].x
         bus_num = bx[:, BUS_NUMERIC_INPUT_COLS]
@@ -241,7 +242,7 @@ class OPFCore(nn.Module):
         raw = data
         proc = data.clone()
         self._strip_labels(proc)
-        proc = self._encode(proc, raw)
+        proc = self._encode(proc)
 
         for layer in self.layers:
             proc = layer(proc)

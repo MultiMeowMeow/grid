@@ -206,7 +206,7 @@ def power_balance_residuals(data, va, vm, pg, qg, line_flows, xfmr_flows):
 # Inequality constraints: thermal limits & angle limits
 # ---------------------------------------------------------------------------
 
-def thermal_violations(edge_attr, flows, rate_col_idx):
+def thermal_violations(Smax, flows):
     """
     Compute thermal limit violations for a set of branches.
     edge_attr : [..., rate_a, ...] at rate_col_idx
@@ -217,7 +217,6 @@ def thermal_violations(edge_attr, flows, rate_col_idx):
     if flows is None or flows.numel() == 0:
         return None, None
 
-    Smax = edge_attr[:, rate_col_idx]  # [E]
     pf, qf, pt, qt = flows.unbind(-1)
 
     Sf2_from = pf.pow(2) + qf.pow(2)
@@ -278,16 +277,11 @@ def constraint_losses(
     # 1) branch flows in p.u.
     line_flows = None
     xfmr_flows = None
-
     if ("bus", "ac_line", "bus") in data.edge_types:
-        line_edge = data[("bus", "ac_line", "bus")].edge_index
-        line_attr = data[("bus", "ac_line", "bus")].edge_attr
-        line_flows = lflows(va, vm, line_edge, line_attr)
-
+        line_flows = lflows(va, vm, data[("bus", "ac_line", "bus")].edge_index, data[("bus", "ac_line", "bus")].edge_attr)
     if ("bus", "transformer", "bus") in data.edge_types:
-        xfmr_edge = data[("bus", "transformer", "bus")].edge_index
-        xfmr_attr = data[("bus", "transformer", "bus")].edge_attr
-        xfmr_flows = tflows(va, vm, xfmr_edge, xfmr_attr, shift_in_deg=shift_in_deg)
+        xfmr_flows = tflows(
+            va, vm, data[("bus", "transformer", "bus")].edge_index, data[("bus", "transformer", "bus")].edge_attr, shift_in_deg=shift_in_deg)
 
     # 2) equality constraints: nodal P/Q balance
     res_P, res_Q = power_balance_residuals(data, va, vm, pg, qg, line_flows, xfmr_flows)
@@ -295,15 +289,14 @@ def constraint_losses(
 
     # 3) inequality: thermal limits (lines + transformers)
     thermal_viols = []
-
     if line_flows is not None:
-        line_attr = data[("bus", "ac_line", "bus")].edge_attr
-        v_from_l, v_to_l = thermal_violations(line_attr, line_flows, rate_col_idx=6)
+        Smax = data[("bus", "ac_line", "bus")].edge_attr[:, 6]
+        v_from_l, v_to_l = thermal_violations(Smax, line_flows)
         thermal_viols.extend([v_from_l, v_to_l])
 
     if xfmr_flows is not None:
-        xfmr_attr = data[("bus", "transformer", "bus")].edge_attr
-        v_from_t, v_to_t = thermal_violations(xfmr_attr, xfmr_flows, rate_col_idx=4)
+        Smax = data[("bus", "transformer", "bus")].edge_attr[:, 4]
+        v_from_t, v_to_t = thermal_violations(Smax, xfmr_flows)
         thermal_viols.extend([v_from_t, v_to_t])
 
     thermal_viols = [v for v in thermal_viols if v is not None]

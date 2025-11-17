@@ -81,17 +81,15 @@ class OPFDataModule(pl.LightningDataModule):
         )
 
 
-class OPFLightningModule(pl.LightningModule):
+class OPFLitModule(pl.LightningModule):
     def __init__(self, model_cfg: DictConfig, optim_cfg: DictConfig, loss_cfg: DictConfig, normalizer_path: Path):
         super().__init__()
         self.save_hyperparameters(ignore=["normalizer_path"])
         self.model = OPFCore(
             num_layers=model_cfg.num_layers,
-            hidden_size=model_cfg.hidden_size,
-            aggregation=model_cfg.aggregation,
+            hidden_size=model_cfg.hidden_size
         )
-        normalizer = OPFNormalizer.load(str(normalizer_path))
-        self.model.norm = normalizer
+        self.model.norm = OPFNormalizer.load(str(normalizer_path))
         self.loss_cfg = loss_cfg
         self.optim_cfg = optim_cfg
 
@@ -160,7 +158,7 @@ def main(cfg: DictConfig) -> None:
     normalizer_path = prepare_normalizer(cfg)
 
     data_module = OPFDataModule(cfg.data)
-    module = OPFLightningModule(cfg.model, cfg.optimizer, cfg.loss, normalizer_path)
+    module = OPFLitModule(cfg.model, cfg.optimizer, cfg.loss, normalizer_path)
 
     trainer = pl.Trainer(**cfg.trainer)
     trainer.fit(module, datamodule=data_module)
