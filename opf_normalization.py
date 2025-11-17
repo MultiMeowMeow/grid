@@ -6,36 +6,30 @@ import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
 
-from feature_layout import (
-    BUS_NUMERIC_INPUT_COLS,
-    AC_LINE_INPUT_COLS,
-    TRANSFORMER_INPUT_COLS,
-)
+from feature_layout import EDGE_INPUT_COLS, NODE_INPUT_COLS
 
 PathKey = Tuple[Union[str, Tuple[str, str, str]], str]  # e.g. ("bus","x") or (("bus","ac_line","bus"),"edge_attr")
 Stats = Tuple[Tensor, Tensor]
 EPS = 1e-8
 
 
-BUS_NORMALIZED_COLS: Sequence[int] = BUS_NUMERIC_INPUT_COLS
-AC_LINE_NORMALIZED_COLS: Sequence[int] = AC_LINE_INPUT_COLS
-TRANSFORMER_NORMALIZED_COLS: Sequence[int] = TRANSFORMER_INPUT_COLS
+NODE_NORMALIZED_COLS = NODE_INPUT_COLS
+EDGE_NORMALIZED_COLS = EDGE_INPUT_COLS
 
 
 @dataclass
 class OPFNormalizer:
     """
     Standardize continuous input features of an OPF sample.  The following
-    inputs are normalized:
-      - bus.x: only base_kv (bus_type/vmin/vmax are skipped)
-      - generator.x: all columns
-      - shunt.x: all columns
-      - (bus, ac_line, bus).edge_attr: all columns except angmin/angmax
-      - (bus, transformer, bus).edge_attr: all columns except
-        angmin/angmax/shift/b_fr/b_to
+    inputs are normalized (column selection defined in ``feature_layout``):
+      - bus.x numeric inputs
+      - generator.x inputs
+      - load.x inputs
+      - shunt.x inputs
+      - physical edge attributes (AC lines & transformers)
 
-    Everything else is intentionally untouched, including graph-level baseMVA,
-    loads (pd/qd already z-scored upstream) and all supervised targets.
+    Everything else is intentionally untouched, including graph-level baseMVA
+    and all supervised targets.
     """
     stats_: Dict[PathKey, Stats] = field(default_factory=dict)
 
@@ -45,7 +39,7 @@ class OPFNormalizer:
         """
 
         def _stats(x: Tensor, key: PathKey):
-            if x is None:
+            if x is None or x.numel() == 0:
                 return
             mean = x.mean(0)
             var = x.var(0, unbiased=False)
@@ -55,44 +49,44 @@ class OPFNormalizer:
 
         self.stats_.clear()
 
-        _stats(sample["bus"].x, ("bus", "x"))
-        _stats(sample["generator"].x, ("generator", "x"))
-        _stats(sample["shunt"].x, ("shunt", "x"))
-        _stats(
-            sample[("bus", "ac_line", "bus")].edge_attr,
-            (("bus", "ac_line", "bus"), "edge_attr"),
-        )
-        _stats(
-            sample[("bus", "transformer", "bus")].edge_attr,
-            (("bus", "transformer", "bus"), "edge_attr"),
-        )
+        for ntype, cols in NODE_NORMALIZED_COLS.items():
+            if len(cols) == 0 or ntype not in sample.node_types:
+                continue
+            _stats(sample[ntype].x[:, cols], (ntype, "x"))
+
+        for etype, cols in EDGE_NORMALIZED_COLS.items():
+            if len(cols) == 0 or etype not in sample.edge_types:
+                continue
+            _stats(sample[etype].edge_attr[:, cols], (etype, "edge_attr"))
 
         return self
 
     @torch.no_grad()
     def normalize(self, data: HeteroData) -> HeteroData:
         def _normalize_subset(x: Tensor, key: PathKey, cols: Sequence[int]) -> Tensor:
-            mean, std = self.stats_.get(key, (None, None))
+            if len(cols) == 0:
+                return x
+            stats = self.stats_.get(key)
+            if stats is None:
+                return x
+            mean, std = stats
+            mean = mean.to(x.device)
+            std = std.to(x.device)
             idx = torch.as_tensor(cols, device=x.device)
-            x[:, idx] = (x[:, idx] - mean[idx]) / std[idx]
+            x_sel = x[:, idx]
+            x[:, idx] = (x_sel - mean) / std
             return x
 
-        data["bus"].x = _normalize_subset(data["bus"].x, ("bus", "x"), BUS_NORMALIZED_COLS)
+        for ntype, cols in NODE_NORMALIZED_COLS.items():
+            if ntype not in data.node_types:
+                continue
+            data[ntype].x = _normalize_subset(data[ntype].x, (ntype, "x"), cols)
 
-        mean, std = self.stats_.get(("generator", "x"), (None, None))
-        data["generator"].x = (data["generator"].x - mean) / std
-
-        mean, std = self.stats_.get(("shunt", "x"), (None, None))
-        data["shunt"].x = (data["shunt"].x - mean) / std
-
-        key = (("bus", "ac_line", "bus"), "edge_attr")
-        data[("bus", "ac_line", "bus")].edge_attr = _normalize_subset(
-            data[("bus", "ac_line", "bus")].edge_attr, key, AC_LINE_NORMALIZED_COLS
-        )
-        key = (("bus", "transformer", "bus"), "edge_attr")
-        data[("bus", "transformer", "bus")].edge_attr = _normalize_subset(
-            data[("bus", "transformer", "bus")].edge_attr, key, TRANSFORMER_NORMALIZED_COLS
-        )
+        for etype, cols in EDGE_NORMALIZED_COLS.items():
+            key = (etype, "edge_attr")
+            if etype not in data.edge_types:
+                continue
+            data[etype].edge_attr = _normalize_subset(data[etype].edge_attr, key, cols)
         return data
 
     def save(self, path: str):
