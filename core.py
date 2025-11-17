@@ -10,6 +10,7 @@ from feature_layout import (
     BUS_NUMERIC_INPUT_COLS,
     BUS_TYPE_COL,
     EDGE_INPUT_COLS,
+    NODE_INPUT_COLS,
 )
 
 class MLP(nn.Module):
@@ -143,9 +144,9 @@ class OPFCore(nn.Module):
 
     NODE_FEATS = {
         "bus": len(BUS_NUMERIC_INPUT_COLS) + 1,  # +1 for bus_type (categorical)
-        "generator": 11,
-        "load": 2,
-        "shunt": 2,
+        "generator": len(NODE_INPUT_COLS["generator"]),
+        "load": len(NODE_INPUT_COLS["load"]),
+        "shunt": len(NODE_INPUT_COLS["shunt"]),
     }
     EDGE_FEATS = {et: len(cols) for et, cols in EDGE_INPUT_COLS.items()}
     BUS_TYPE = 4
